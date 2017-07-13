@@ -1,7 +1,6 @@
 #![feature(plugin)]
 #![plugin(rocket_codegen)]
 extern crate rocket;
-#[macro_use]
 extern crate rocket_contrib;
 extern crate babystats;
 
@@ -15,7 +14,8 @@ use rocket_contrib::Json;
 
 #[get("/")]
 fn index(events: State<Mutex<Vec<babystats::Event>>>) -> Json<Vec<babystats::Event>> {
-    Json(*events.lock().unwrap())
+    let temp: Vec<_> = events.lock().unwrap().clone();
+    Json(temp)
 }
 
 fn run() -> Result<(), Box<Error>> {
