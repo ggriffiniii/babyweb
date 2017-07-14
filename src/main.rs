@@ -24,21 +24,43 @@ fn index(events: State<Mutex<Vec<babystats::Event>>>) -> Json<Vec<babystats::Eve
     Json(temp)
 }
 
+#[derive(Debug,Serialize)]
+struct GraphContext {
+    foo: i32,
+}
+
 #[get("/graph/<name>")]
-fn graph(name: GraphType, shared_events: State<Mutex<Vec<babystats::Event>>>) -> Json<plotly::Data<f64>> {
+fn graph(name: GraphType) -> rocket_contrib::Template {
+    rocket_contrib::Template::render("graph", GraphContext{foo: 1})
+}
+
+#[get("/table/<name>")]
+fn table(name: GraphType) -> rocket_contrib::Template {
+    rocket_contrib::Template::render("table", GraphContext{foo: 1})
+}
+
+#[get("/graph/<name>/data")]
+fn data(name: GraphType, shared_events: State<Mutex<Vec<babystats::Event>>>) -> Json<plotly::Data<f64>> {
     let events = shared_events.lock().unwrap();
     Json(name.data(events.deref()))
 }
 
+#[get("/graph/<name>/layout")]
+fn layout(name: GraphType) -> Json<plotly::Layout> {
+    Json(name.layout())
+}
+
 enum GraphType {
-    Milk
+    Bottle,
+    MaxSleep,
 }
 
 impl<'a> rocket::request::FromParam<'a> for GraphType {
     type Error = String;
     fn from_param(param: &'a rocket::http::RawStr) -> Result<GraphType, String> {
         let g = match param.as_str() {
-            "milk" => GraphType::Milk,
+            "bottle" => GraphType::Bottle,
+            "maxsleep" => GraphType::MaxSleep,
             _ => return Err(format!("unknown graph type: {}", param)),
         };
         Ok(g)
@@ -48,11 +70,19 @@ impl<'a> rocket::request::FromParam<'a> for GraphType {
 impl GraphType {
     fn data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
         match *self {
-            GraphType::Milk => self.milk_data(events),
+            GraphType::Bottle => self.bottle_data(events),
+            GraphType::MaxSleep => self.max_sleep_data(events),
         }
     }
 
-    fn milk_data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
+    fn layout(&self) -> plotly::Layout {
+        match *self {
+            GraphType::Bottle => self.bottle_layout(),
+            GraphType::MaxSleep => self.max_sleep_layout(),
+        }
+    }
+
+    fn bottle_data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
         let mut m: BTreeMap<_, _> = BTreeMap::new();
         for event in events.iter().filter_map(|e| match *e {
             babystats::Event::Feeding(babystats::FeedingEvent::Bottle(ref be)) => Some(be),
@@ -66,6 +96,49 @@ impl GraphType {
                 y: m.values().map(|x| x.clone() as f64).collect(),
                 mode: "lines".to_string(),
             })
+    }
+
+    fn bottle_layout(&self) -> plotly::Layout {
+        plotly::Layout{
+            title: "Bottles per day".to_string(),
+            xaxis: None,
+            yaxis: Some(plotly::Axis{title: "Ounces".to_string()})
+        }
+    }
+
+    fn max_sleep_data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
+        let mut m: BTreeMap<_, _> = BTreeMap::new();
+        for (date, duration) in events.iter().filter_map(|e| match *e {
+            babystats::Event::Sleep(babystats::SleepEvent{end: Some(ref end), ref duration, ..}) => Some((end, duration)),
+            _ => None,
+        }) {
+            let hours = duration.num_milliseconds() as f64 / 3600000.0;
+            let x = m.entry(date.date()).or_insert(0.0);
+            if *x < hours {
+                *x = hours;
+            }
+        }
+        let v: Vec<_> = m.into_iter().collect();
+        let rolling_mean: Vec<_> = v.windows(5).map(|kv| {
+            let &(k,_) = kv.iter().last().unwrap();
+            let (count, sum) = kv.iter().fold((0, 0.0), |(count, sum), &(_, v)| {
+                (count+1, sum + v)
+            });
+            (k, sum / count as f64)
+        }).collect();
+        vec!(plotly::Trace{
+                x: rolling_mean.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
+                y: rolling_mean.iter().map(|&(_,v)| v).collect(),
+                mode: "lines".to_string(),
+            })
+    }
+
+    fn max_sleep_layout(&self) -> plotly::Layout {
+        plotly::Layout{
+            title: "Max sleep duration per night".to_string(),
+            xaxis: None,
+            yaxis: Some(plotly::Axis{title: "Hours".to_string()})
+        }
     }
 }
 
@@ -83,10 +156,18 @@ mod plotly {
     pub type Data<T> = Vec<Trace<T>>;
 
     #[derive(Debug,Serialize)]
-    pub struct Layount {
+    pub struct Layout {
         pub title: String,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub xaxis: Option<Axis>,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub yaxis: Option<Axis>,
     }
 
+    #[derive(Debug,Serialize)]
+    pub struct Axis {
+        pub title: String,
+    }
 }
 
 fn run() -> Result<(), Box<Error>> {
@@ -95,7 +176,8 @@ fn run() -> Result<(), Box<Error>> {
     let events: Vec<_> = rdr.into_iter().map(|r| r.unwrap()).collect();
     rocket::ignite()
         .manage(Mutex::new(events))
-        .mount("/", routes![index, graph])
+        .attach(rocket_contrib::Template::fairing())
+        .mount("/", routes![index, graph, table, data, layout])
         .launch();
     Ok(())
 }

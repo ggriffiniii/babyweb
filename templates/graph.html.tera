@@ -1,0 +1,19 @@
+<html>
+<head>
+	<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+	<div id="main"></div>
+	<script>
+		var dataP = fetch(window.location.href + "/data").then(function(resp) { return resp.json(); });
+		var layoutP = fetch(window.location.href + "/layout").then(function(resp) { return resp.json(); });
+		Promise.all([dataP, layoutP]).then(function(resp) {
+			console.log("ploting graph");
+			var main = document.getElementById('main');
+			Plotly.plot(main, resp[0], resp[1]);
+		}).catch(function(err) {
+			console.log(err);
+		});
+	</script>
+</body>
+</html>

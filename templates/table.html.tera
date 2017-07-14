@@ -1,0 +1,24 @@
+<html>
+<head>
+	<script src="https://d3js.org/d3.v4.min.js"></script>
+</head>
+<body>
+	<div id="main"></div>
+	<script>
+		fetch(window.location.href + "/data").then(function(resp) {
+			return resp.json();
+		}).then(function(data) {
+			d3.select("#main")
+				.
+		});
+
+		Promise.all([dataP, layoutP]).then(function(resp) {
+			console.log("ploting graph");
+			var main = document.getElementById('main');
+			Plotly.plot(main, resp[0], resp[1]);
+		}).catch(function(err) {
+			console.log(err);
+		});
+	</script>
+</body>
+</html>
