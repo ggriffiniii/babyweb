@@ -84,17 +84,47 @@ impl GraphType {
 
     fn bottle_data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
         let mut m: BTreeMap<_, _> = BTreeMap::new();
-        for event in events.iter().filter_map(|e| match *e {
-            babystats::Event::Feeding(babystats::FeedingEvent::Bottle(ref be)) => Some(be),
-            _ => None,
-        }) {
-            let amount = m.entry(event.time.date()).or_insert(0.0);
-            *amount += event.ounces;
+        for event in events {
+            match *event {
+                babystats::Event::Feeding(babystats::FeedingEvent::Bottle(ref be)) => {
+                    let amount = m.entry(be.time.date()).or_insert(FeedingTotals::new());
+                    match be.milk {
+                        babystats::Milk::BreastMilk => amount.breast_milk += be.ounces as f64,
+                        babystats::Milk::Formula => amount.formula += be.ounces as f64,
+                        babystats::Milk::Unknown => amount.unknown += be.ounces as f64,
+                    };
+                },
+                babystats::Event::Feeding(babystats::FeedingEvent::LeftBreast(ref le)) => {
+                    let amount = m.entry(le.start.date()).or_insert(FeedingTotals::new());
+                    amount.breast_feeding = amount.breast_feeding + le.duration;
+                },
+                babystats::Event::Feeding(babystats::FeedingEvent::RightBreast(ref re)) => {
+                    let amount = m.entry(re.start.date()).or_insert(FeedingTotals::new());
+                    amount.breast_feeding = amount.breast_feeding + re.duration;
+                },
+                _ => {},
+            }
         }
         vec!(plotly::Trace{
                 x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
-                y: m.values().map(|x| x.clone() as f64).collect(),
-                mode: "lines".to_string(),
+                y: m.values().map(|x| x.breast_milk).collect(),
+                mode: None,
+                name: Some("Breast Milk".to_string()),
+                typ: Some("bar".to_string()),
+            },
+            plotly::Trace{
+                x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
+                y: m.values().map(|x| x.formula).collect(),
+                mode: None,
+                name: Some("Formula".to_string()),
+                typ: Some("bar".to_string()),
+            },
+            plotly::Trace{
+                x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
+                y: m.values().map(|x| x.unknown).collect(),
+                mode: None,
+                name: Some("Unknown".to_string()),
+                typ: Some("bar".to_string()),
             })
     }
 
@@ -102,7 +132,8 @@ impl GraphType {
         plotly::Layout{
             title: "Bottles per day".to_string(),
             xaxis: None,
-            yaxis: Some(plotly::Axis{title: "Ounces".to_string()})
+            yaxis: Some(plotly::Axis{title: "Ounces".to_string()}),
+            barmode: Some("stack".to_string()),
         }
     }
 
@@ -119,17 +150,34 @@ impl GraphType {
             }
         }
         let v: Vec<_> = m.into_iter().collect();
-        let rolling_mean: Vec<_> = v.windows(5).map(|kv| {
+        let rolling_min_mean_max: Vec<_> = v.windows(5).map(|kv| {
             let &(k,_) = kv.iter().last().unwrap();
-            let (count, sum) = kv.iter().fold((0, 0.0), |(count, sum), &(_, v)| {
-                (count+1, sum + v)
+            let min_mean_max = kv.iter().fold(MinMeanMax::new(), |mut mmm, &(_, v)| {
+                mmm.record(v);
+                mmm
             });
-            (k, sum / count as f64)
+            (k, min_mean_max)
         }).collect();
         vec!(plotly::Trace{
-                x: rolling_mean.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
-                y: rolling_mean.iter().map(|&(_,v)| v).collect(),
-                mode: "lines".to_string(),
+                x: rolling_min_mean_max.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
+                y: rolling_min_mean_max.iter().map(|&(_,ref v)| v.min().unwrap()).collect(),
+                mode: Some("lines".to_string()),
+                typ: None,
+                name: Some("min".to_string()),
+            },
+            plotly::Trace{
+                x: rolling_min_mean_max.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
+                y: rolling_min_mean_max.iter().map(|&(_,ref v)| v.mean().unwrap()).collect(),
+                mode: Some("lines".to_string()),
+                typ: None,
+                name: Some("mean".to_string()),
+            },
+            plotly::Trace{
+                x: rolling_min_mean_max.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
+                y: rolling_min_mean_max.iter().map(|&(_,ref v)| v.max().unwrap()).collect(),
+                mode: Some("lines".to_string()),
+                typ: None,
+                name: Some("max".to_string()),
             })
     }
 
@@ -137,7 +185,75 @@ impl GraphType {
         plotly::Layout{
             title: "Max sleep duration per night".to_string(),
             xaxis: None,
-            yaxis: Some(plotly::Axis{title: "Hours".to_string()})
+            yaxis: Some(plotly::Axis{title: "Hours".to_string()}),
+            barmode: None,
+        }
+    }
+}
+
+struct MinMeanMax {
+    ct: i64,
+    sm: Option<f64>,
+    mn: Option<f64>,
+    mx: Option<f64>,
+}
+
+impl MinMeanMax {
+    fn new() -> MinMeanMax {
+        MinMeanMax{
+            ct: 0,
+            sm: None,
+            mn: None,
+            mx: None,
+        }
+    }
+
+    fn record(&mut self, x: f64) {
+        self.ct += 1;
+        self.sm = Some(self.sm.unwrap_or(0.0) + x);
+        self.mn = match self.mn {
+            Some(m) if x < m => Some(x),
+            None => Some(x),
+            _ => self.mn,
+        };
+        self.mx = match self.mx {
+            Some(m) if x > m => Some(x),
+            None => Some(x),
+            _ => self.mx,
+        };
+    }
+
+    fn mean(&self) -> Option<f64> {
+        if let Some(sum) = self.sm {
+            Some(sum / self.ct as f64)
+        } else {
+            None
+        }
+    }
+
+    fn max(&self) -> Option<f64> {
+        self.mx
+    }
+
+    fn min(&self) -> Option<f64> {
+        self.mn
+    }
+}
+
+struct FeedingTotals {
+    unknown: f64,
+    breast_milk: f64,
+    formula: f64,
+    breast_feeding: chrono::Duration,
+}
+
+impl FeedingTotals {
+    fn new() -> FeedingTotals {
+        FeedingTotals{
+            unknown: 0.0,
+            breast_milk: 0.0,
+            formula: 0.0,
+            breast_feeding: chrono::Duration::seconds(0),
         }
     }
 }
@@ -150,7 +266,12 @@ mod plotly {
     pub struct Trace<T> {
         pub x: Vec<chrono::DateTime<Local>>,
         pub y: Vec<T>,
-        pub mode: String,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub mode: Option<String>,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub name: Option<String>,
+        #[serde(skip_serializing_if="Option::is_none",rename="type")]
+        pub typ: Option<String>,
     }
 
     pub type Data<T> = Vec<Trace<T>>;
@@ -162,6 +283,8 @@ mod plotly {
         pub xaxis: Option<Axis>,
         #[serde(skip_serializing_if="Option::is_none")]
         pub yaxis: Option<Axis>,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub barmode: Option<String>,
     }
 
     #[derive(Debug,Serialize)]
