@@ -11,17 +11,14 @@ extern crate serde_derive;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::io;
-use std::ops::Deref;
 use std::process;
-use std::sync::Mutex;
 use babystats::BabyManagerData;
 use rocket::State;
 use rocket_contrib::Json;
 
 #[get("/")]
-fn index(events: State<Mutex<Vec<babystats::Event>>>) -> Json<Vec<babystats::Event>> {
-    let temp: Vec<_> = events.lock().unwrap().clone();
-    Json(temp)
+fn index(events: State<Vec<babystats::Event>>) -> Json<&[babystats::Event]> {
+    Json(events.inner())
 }
 
 #[derive(Debug,Serialize)]
@@ -40,9 +37,8 @@ fn table(name: GraphType) -> rocket_contrib::Template {
 }
 
 #[get("/graph/<name>/data")]
-fn data(name: GraphType, shared_events: State<Mutex<Vec<babystats::Event>>>) -> Json<plotly::Data<f64>> {
-    let events = shared_events.lock().unwrap();
-    Json(name.data(events.deref()))
+fn data(name: GraphType, events: State<Vec<babystats::Event>>) -> Json<plotly::Data<f64>> {
+    Json(name.data(&events))
 }
 
 #[get("/graph/<name>/layout")]
@@ -68,7 +64,7 @@ impl<'a> rocket::request::FromParam<'a> for GraphType {
 }
 
 impl GraphType {
-    fn data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
+    fn data(&self, events: &[babystats::Event]) -> plotly::Data<f64> {
         match *self {
             GraphType::Bottle => self.bottle_data(events),
             GraphType::MaxSleep => self.max_sleep_data(events),
@@ -82,7 +78,7 @@ impl GraphType {
         }
     }
 
-    fn bottle_data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
+    fn bottle_data(&self, events: &[babystats::Event]) -> plotly::Data<f64> {
         let mut m: BTreeMap<_, _> = BTreeMap::new();
         for event in events {
             match *event {
@@ -108,6 +104,7 @@ impl GraphType {
         vec!(plotly::Trace{
                 x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
                 y: m.values().map(|x| x.breast_milk).collect(),
+                yaxis: Some("y1".to_string()),
                 mode: None,
                 name: Some("Breast Milk".to_string()),
                 typ: Some("bar".to_string()),
@@ -115,6 +112,7 @@ impl GraphType {
             plotly::Trace{
                 x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
                 y: m.values().map(|x| x.formula).collect(),
+                yaxis: Some("y1".to_string()),
                 mode: None,
                 name: Some("Formula".to_string()),
                 typ: Some("bar".to_string()),
@@ -122,9 +120,18 @@ impl GraphType {
             plotly::Trace{
                 x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
                 y: m.values().map(|x| x.unknown).collect(),
+                yaxis: Some("y1".to_string()),
                 mode: None,
                 name: Some("Unknown".to_string()),
                 typ: Some("bar".to_string()),
+            },
+            plotly::Trace{
+                x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
+                y: m.values().map(|x| x.breast_feeding.num_milliseconds() as f64 / 60000.0).collect(),
+                yaxis: Some("y2".to_string()),
+                mode: None,
+                name: Some("BreastFeed".to_string()),
+                typ: Some("line".to_string()),
             })
     }
 
@@ -132,12 +139,13 @@ impl GraphType {
         plotly::Layout{
             title: "Bottles per day".to_string(),
             xaxis: None,
-            yaxis: Some(plotly::Axis{title: "Ounces".to_string()}),
+            yaxis: Some(plotly::Axis{title: "Ounces".to_string(), side: None, overlaying: None}),
+            yaxis2: Some(plotly::Axis{title: "Minutes Breast Feeding".to_string(), side: Some("right".to_string()), overlaying: Some("y".to_string())}),
             barmode: Some("stack".to_string()),
         }
     }
 
-    fn max_sleep_data(&self, events: &Vec<babystats::Event>) -> plotly::Data<f64> {
+    fn max_sleep_data(&self, events: &[babystats::Event]) -> plotly::Data<f64> {
         let mut m: BTreeMap<_, _> = BTreeMap::new();
         for (date, duration) in events.iter().filter_map(|e| match *e {
             babystats::Event::Sleep(babystats::SleepEvent{end: Some(ref end), ref duration, ..}) => Some((end, duration)),
@@ -161,6 +169,7 @@ impl GraphType {
         vec!(plotly::Trace{
                 x: rolling_min_mean_max.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
                 y: rolling_min_mean_max.iter().map(|&(_,ref v)| v.min().unwrap()).collect(),
+                yaxis: None,
                 mode: Some("lines".to_string()),
                 typ: None,
                 name: Some("min".to_string()),
@@ -168,6 +177,7 @@ impl GraphType {
             plotly::Trace{
                 x: rolling_min_mean_max.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
                 y: rolling_min_mean_max.iter().map(|&(_,ref v)| v.mean().unwrap()).collect(),
+                yaxis: None,
                 mode: Some("lines".to_string()),
                 typ: None,
                 name: Some("mean".to_string()),
@@ -175,6 +185,7 @@ impl GraphType {
             plotly::Trace{
                 x: rolling_min_mean_max.iter().map(|&(k,_)| k.and_hms(0,0,0)).collect(),
                 y: rolling_min_mean_max.iter().map(|&(_,ref v)| v.max().unwrap()).collect(),
+                yaxis: None,
                 mode: Some("lines".to_string()),
                 typ: None,
                 name: Some("max".to_string()),
@@ -185,7 +196,8 @@ impl GraphType {
         plotly::Layout{
             title: "Max sleep duration per night".to_string(),
             xaxis: None,
-            yaxis: Some(plotly::Axis{title: "Hours".to_string()}),
+            yaxis: Some(plotly::Axis{title: "Hours".to_string(), side: None, overlaying: None}),
+            yaxis2: None,
             barmode: None,
         }
     }
@@ -267,6 +279,8 @@ mod plotly {
         pub x: Vec<chrono::DateTime<Local>>,
         pub y: Vec<T>,
         #[serde(skip_serializing_if="Option::is_none")]
+        pub yaxis: Option<String>,
+        #[serde(skip_serializing_if="Option::is_none")]
         pub mode: Option<String>,
         #[serde(skip_serializing_if="Option::is_none")]
         pub name: Option<String>,
@@ -284,21 +298,28 @@ mod plotly {
         #[serde(skip_serializing_if="Option::is_none")]
         pub yaxis: Option<Axis>,
         #[serde(skip_serializing_if="Option::is_none")]
+        pub yaxis2: Option<Axis>,
+        #[serde(skip_serializing_if="Option::is_none")]
         pub barmode: Option<String>,
     }
 
     #[derive(Debug,Serialize)]
     pub struct Axis {
         pub title: String,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub side: Option<String>,
+        #[serde(skip_serializing_if="Option::is_none")]
+        pub overlaying: Option<String>,
     }
 }
 
 fn run() -> Result<(), Box<Error>> {
     println!("Hello, world!");
     let mut rdr = BabyManagerData::from_reader(io::stdin());
-    let events: Vec<_> = rdr.into_iter().map(|r| r.unwrap()).collect();
+    let mut events: Vec<_> = rdr.into_iter().map(|r| r.unwrap()).collect();
+    events.sort_by_key(|e| e.time());
     rocket::ignite()
-        .manage(Mutex::new(events))
+        .manage(events)
         .attach(rocket_contrib::Template::fairing())
         .mount("/", routes![index, graph, table, data, layout])
         .launch();
