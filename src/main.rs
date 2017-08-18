@@ -49,6 +49,7 @@ fn layout(name: GraphType) -> Json<plotly::Layout> {
 enum GraphType {
     Bottle,
     MaxSleep,
+    Pumping,
 }
 
 impl<'a> rocket::request::FromParam<'a> for GraphType {
@@ -57,6 +58,7 @@ impl<'a> rocket::request::FromParam<'a> for GraphType {
         let g = match param.as_str() {
             "bottle" => GraphType::Bottle,
             "maxsleep" => GraphType::MaxSleep,
+            "pumping" => GraphType::Pumping,
             _ => return Err(format!("unknown graph type: {}", param)),
         };
         Ok(g)
@@ -68,6 +70,7 @@ impl GraphType {
         match *self {
             GraphType::Bottle => self.bottle_data(events),
             GraphType::MaxSleep => self.max_sleep_data(events),
+            GraphType::Pumping => self.pumping_data(events),
         }
     }
 
@@ -75,6 +78,7 @@ impl GraphType {
         match *self {
             GraphType::Bottle => self.bottle_layout(),
             GraphType::MaxSleep => self.max_sleep_layout(),
+            GraphType::Pumping => self.pumping_layout(),
         }
     }
 
@@ -142,6 +146,37 @@ impl GraphType {
             yaxis: Some(plotly::Axis{title: "Ounces".to_string(), side: None, overlaying: None}),
             yaxis2: Some(plotly::Axis{title: "Minutes Breast Feeding".to_string(), side: Some("right".to_string()), overlaying: Some("y".to_string())}),
             barmode: Some("stack".to_string()),
+        }
+    }
+
+    fn pumping_data(&self, events: &[babystats::Event]) -> plotly::Data<f64> {
+        let mut m: BTreeMap<_, _> = BTreeMap::new();
+        for event in events {
+            match *event {
+                babystats::Event::Pumping(ref pe) => {
+                    let amount = m.entry(pe.start.date()).or_insert(0.0);
+                    *amount += pe.ml as f64;
+                }
+                _ => {},
+            }
+        }
+        vec!(plotly::Trace{
+            x: m.keys().map(|d| d.and_hms(0,0,0)).collect(),
+            y: m.values().map(|i| i.clone()).collect(),
+            yaxis: None,
+            mode: None,
+            name: Some("Pumped Milk".to_string()),
+            typ: Some("line".to_string()),
+        })
+    }
+
+    fn pumping_layout(&self) -> plotly::Layout {
+        plotly::Layout{
+            title: "Pumped per day".to_string(),
+            xaxis: None,
+            yaxis: Some(plotly::Axis{title: "milliliters".to_string(), side: None, overlaying: None}),
+            yaxis2: None,
+            barmode: None,
         }
     }
 
